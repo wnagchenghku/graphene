@@ -43,6 +43,8 @@
    on events and semaphores */
 static int _DkObjectWaitOne (PAL_HANDLE handle, uint64_t timeout)
 {
+    int writeable_fd = -1;
+    
     /* only for all these handle which has a file descriptor, or
        a eventfd. events and semaphores will skip this part */
     if (HANDLE_HDR(handle)->flags & HAS_FDS) {
