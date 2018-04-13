@@ -44,7 +44,7 @@
 static int _DkObjectWaitOne (PAL_HANDLE handle, uint64_t timeout)
 {
     int writeable_fd = -1;
-    
+
     /* only for all these handle which has a file descriptor, or
        a eventfd. events and semaphores will skip this part */
     if (HANDLE_HDR(handle)->flags & HAS_FDS) {
@@ -54,14 +54,33 @@ static int _DkObjectWaitOne (PAL_HANDLE handle, uint64_t timeout)
         for (int i = 0 ; i < MAX_FDS ; i++) {
             int events = 0;
 
+            /* DEP 4/2/18: Go ahead and check for POLLOUT even if 
+             * we have already cached the WRITEABLE property.
+             * It should go quickly.  Or, we could quit early.
+             */
+
+
             if ((HANDLE_HDR(handle)->flags & RFD(i)) &&
                 !(HANDLE_HDR(handle)->flags & ERROR(i)))
                 events |= POLLIN;
 
-            if ((HANDLE_HDR(handle)->flags & WFD(i)) &&
-                !(HANDLE_HDR(handle)->flags & WRITEABLE(i)) &&
-                !(HANDLE_HDR(handle)->flags & ERROR(i)))
-                events |= POLLOUT;
+            // if ((HANDLE_HDR(handle)->flags & WFD(i)) &&
+            //     !(HANDLE_HDR(handle)->flags & WRITEABLE(i)) &&
+            //     !(HANDLE_HDR(handle)->flags & ERROR(i)))
+            //     events |= POLLOUT;
+            if ((HANDLE_HDR(handle)->flags & WFD(i))) {
+
+                if (!(HANDLE_HDR(handle)->flags & WRITEABLE(i)) &&
+                    !(HANDLE_HDR(handle)->flags & ERROR(i)))
+                    events |= POLLOUT;
+                else if (events && !(HANDLE_HDR(handle)->flags & ERROR(i))) {
+                    // We should be able to at least return that this handle
+                    // is writeable, if anyone cares.  We only need to return
+                    // one, so it is ok to set the last one.
+                    timeout = 0;
+                    writeable_fd = i;
+                }
+            }
 
             if (events) {
                 fds[nfds].fd = handle->generic.fds[i];
@@ -80,8 +99,16 @@ static int _DkObjectWaitOne (PAL_HANDLE handle, uint64_t timeout)
         if (ret < 0)
             return ret;
 
-        if (!ret)
-            return -PAL_ERROR_TRYAGAIN;
+        // if (!ret)
+        //     return -PAL_ERROR_TRYAGAIN;
+        if (!ret) {
+            // DEP 4/2/18: Patch up the case where a WRITEABLE socket can
+            // return immediately
+            if (writeable_fd != -1) {
+                fds[writeable_fd].revents |= POLLOUT;
+            } else
+                return -PAL_ERROR_TRYAGAIN;
+        }
 
         for (int i = 0 ; i < nfds ; i++) {
             if (!fds[i].revents)
@@ -108,6 +135,8 @@ static int _DkObjectWaitOne (PAL_HANDLE handle, uint64_t timeout)
 int _DkObjectsWaitAny (int count, PAL_HANDLE * handleArray, uint64_t timeout,
                        PAL_HANDLE * polled)
 {
+    int writeable_fd = -1;
+
     if (count <= 0)
         return 0;
 
@@ -163,10 +192,30 @@ int _DkObjectsWaitAny (int count, PAL_HANDLE * handleArray, uint64_t timeout,
                 !(HANDLE_HDR(hdl)->flags & ERROR(j)))
                 events |= POLLIN;
 
-            if ((HANDLE_HDR(hdl)->flags & WFD(j)) &&
-                !(HANDLE_HDR(hdl)->flags & WRITEABLE(j)) &&
-                !(HANDLE_HDR(hdl)->flags & ERROR(j)))
-                events |= POLLOUT;
+            // if ((HANDLE_HDR(hdl)->flags & WFD(j)) &&
+            //     !(HANDLE_HDR(hdl)->flags & WRITEABLE(j)) &&
+            //     !(HANDLE_HDR(hdl)->flags & ERROR(j)))
+            //     events |= POLLOUT;
+            /* DEP 4/2/18: Go ahead and check for POLLOUT even if 
+             * we have already cached the WRITEABLE property.
+             * It should go quickly.  Or, we could quit early.
+             */
+
+            if ((HANDLE_HDR(hdl)->flags & WFD(j))) {
+
+                if (!(HANDLE_HDR(hdl)->flags & WRITEABLE(j)) &&
+                    !(HANDLE_HDR(hdl)->flags & ERROR(j)))
+                    events |= POLLOUT;
+                else if (events && hdl->generic.fds[j] != PAL_IDX_POISON
+                         && !(HANDLE_HDR(hdl)->flags & ERROR(j))) {
+                    // We should be able to at least return that this handle
+                    // is writeable, if anyone cares.  We only need to return
+                    // one, so it is ok to set the last one.
+                    timeout = 0;
+                    writeable_fd = i;
+                }
+            }
+
 
             if (events && hdl->generic.fds[j] != PAL_IDX_POISON) {
                 fds[nfds].fd = hdl->generic.fds[j];
@@ -186,8 +235,16 @@ int _DkObjectsWaitAny (int count, PAL_HANDLE * handleArray, uint64_t timeout,
     if (ret < 0)
         return ret;
 
-    if (!ret)
-        return -PAL_ERROR_TRYAGAIN;
+    // if (!ret)
+    //     return -PAL_ERROR_TRYAGAIN;
+    if (!ret) {
+        // DEP 4/2/18: Patch up the case where a WRITEABLE socket can
+        // return immediately
+        if (writeable_fd != -1) {
+            fds[writeable_fd].revents |= POLLOUT;
+        } else
+            return -PAL_ERROR_TRYAGAIN;
+    }
 
     PAL_HANDLE polled_hdl = NULL;
 
